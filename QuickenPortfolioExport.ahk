@@ -1,8 +1,7 @@
 ﻿#Requires AutoHotkey v2.0
 #SingleInstance Force
 
-quickenPath := "\\10.0.0.214\pi-nas\openclaw\quicken_tools\qdfs\HOME_nightly.QDF"
-;quickenPath := "C:\Program Files (x86)\Quicken\qw.exe"
+quickenPath := "c:\tmp\HOME_nightly.QDF"
 exportPath := "\\10.0.0.214\pi-nas\openclaw\quicken_tools\portfolio_nightly.csv"
 
 if ProcessExist("qw.exe") {
