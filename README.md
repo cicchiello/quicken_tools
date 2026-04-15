@@ -4,25 +4,34 @@ Automates a daily export of the Quicken **Investing Portfolio** view to a CSV fi
 
 ## What this does
 
-This automation:
+The current workflow is a two-stage Windows automation:
 
-1. Aborts immediately if Quicken is already running.
-2. Opens a specific Quicken `.QDF` data file.
-3. Waits for Quicken to finish launching.
-4. Opens the **Investing Portfolio** view.
-5. Sets:
+1. A wrapper batch file copies the source Quicken `.QDF` file to a **local working file** on the Windows machine.
+2. The batch file launches an AutoHotkey v2 script and waits for it to finish.
+3. The AutoHotkey script aborts immediately if Quicken is already running.
+4. The AutoHotkey script opens the local working `.QDF` file.
+5. It waits for Quicken to finish launching.
+6. It opens the **Investing Portfolio** view.
+7. It sets:
    - **Show** = `Holdings`
    - **Group By** = `Accounts`
-6. Opens the export workflow.
-7. Selects the **Export to:** option.
-8. Saves the export to a fixed CSV path.
-9. Approves overwrite of the target file.
-10. Closes Quicken.
+8. It opens the portfolio export workflow.
+9. It selects the **Export to:** option.
+10. It saves the export to a fixed nightly CSV path.
+11. It approves overwrite of the nightly CSV.
+12. It closes Quicken.
+13. If the AutoHotkey script returns success, the wrapper batch file copies the nightly CSV to an archive filename for that day.
 
-The intended output file is:
+The current nightly CSV path is:
 
 ```text
-\\10.0.0.214\pi-nas\openclaw\quicken_exports\portfolio_nightly.csv
+\\10.0.0.214\pi-nas\openclaw\quicken_tools\portfolio_nightly.csv
+```
+
+The current archive directory is:
+
+```text
+\\10.0.0.214\pi-nas\openclaw\quicken_tools\archive
 ```
 
 ---
@@ -34,13 +43,9 @@ This automation currently assumes all of the following are true:
 - It runs on a Windows PC that is always on.
 - The Windows user account can launch and use Quicken.
 - Auto-login is enabled or the user is already logged in.
-- Quicken is installed at:
-
-```text
-C:\Program Files (x86)\Quicken\qw.exe
-```
-
-- The Quicken data file is known and fixed.
+- Quicken is installed and can open `.QDF` files through normal Windows file association.
+- The working `.QDF` used by the automation is **local** to the Windows machine.
+- The source `.QDF` is readable by the wrapper batch file.
 - The export destination UNC path is reachable from the PC.
 - Quicken UI keyboard shortcuts and dropdown ordering remain stable.
 
@@ -53,7 +58,7 @@ Because this is UI automation, layout or workflow changes in Quicken may require
 This repo is intended to hold:
 
 - the AutoHotkey automation script
-- any helper scripts or wrappers
+- the wrapper batch file
 - Task Scheduler setup notes
 - logs or future enhancements for monitoring and error handling
 
@@ -66,11 +71,14 @@ This repo is intended to hold:
 - Windows 10 or 11
 - Quicken for Windows
 - AutoHotkey v2
+- PowerShell (used by the batch wrapper for date-stamped archive names)
 
 ### Access
 
-- Read/write access to the Quicken `.QDF` file
+- Read access to the source Quicken `.QDF` file
+- Read/write access to the local working `.QDF` location
 - Write access to the export target directory on the NAS/share
+- Write access to the archive directory on the NAS/share
 
 ### Recommended environment
 
@@ -81,68 +89,62 @@ This repo is intended to hold:
 
 ---
 
-## Script behavior
+## Why the working QDF is local
 
-The automation is currently implemented in AutoHotkey v2.
+Quicken warns when a live data file is opened from a network location. The automation therefore uses this safer pattern:
 
-### Guard condition
+- keep the source `.QDF` wherever the user normally maintains it
+- copy it to a **local working path** before launching Quicken
+- open the local working file from AutoHotkey
+- export the CSV to the NAS/share
 
-If Quicken is already open when the script starts, the script exits immediately without taking any action.
-
-Example guard:
-
-```ahk
-if ProcessExist("qw.exe") {
-    ExitApp
-}
-```
-
-This avoids interfering with an interactive Quicken session.
-
-### Launch method
-
-The automation launches the **specific `.QDF` file directly**, instead of launching `qw.exe` and letting Quicken choose the most recent file.
-
-This has proven to be more reliable.
+This avoids Quicken's non-local-file warning during the automated run.
 
 ---
 
-## Current script
+## Current AutoHotkey script
 
-> Update the `qdfPath` value for the local machine.
+This is the current unattended export script with explicit exit codes.
 
 ```ahk
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 
-qdfPath := "C:\path\to\your\file.QDF"
-exportPath := "\\10.0.0.214\pi-nas\openclaw\quicken_exports\portfolio_nightly.csv"
+qdfPath := "C:\tmp\HOME_nightly.QDF"
+exportPath := "\\10.0.0.214\pi-nas\openclaw\quicken_tools\portfolio_nightly.csv"
+
+; Exit codes:
+;   0  = success
+;   10 = Quicken already running
+;   11 = QDF file missing
+;   12 = Quicken window did not appear
+;   13 = Quicken window could not be activated
 
 if ProcessExist("qw.exe") {
-    ExitApp
+    ExitApp 10
 }
 
 if !FileExist(qdfPath) {
-    MsgBox "Quicken data file not found:`n" qdfPath
-    ExitApp
+    ExitApp 11
 }
 
 Run qdfPath
-Sleep 20000
+Sleep 25000
 
 if !WinExist("ahk_exe qw.exe") {
-    MsgBox "Quicken process/window not found after 20 seconds."
-    ExitApp
+    ExitApp 12
 }
 
 WinActivate "ahk_exe qw.exe"
 Sleep 1000
 
-; Open Investing Portfolio view
+if !WinActive("ahk_exe qw.exe") {
+    ExitApp 13
+}
+
 Send "^u"
 Sleep 3000
 
-; Move to "Show" and set it to Holdings
 Send "!s"
 Sleep 500
 Send "{Home}"
@@ -168,7 +170,6 @@ Sleep 300
 Send "{Enter}"
 Sleep 1500
 
-; Move to "Group By" and set it to Accounts
 Send "!g"
 Sleep 500
 Send "{Home}"
@@ -176,21 +177,17 @@ Sleep 300
 Send "{Enter}"
 Sleep 2000
 
-; Open export dialog
 Send "^p"
 Sleep 2000
 
-; Select the "Export to:" option
 Send "!x"
 Sleep 500
 Send "{Space}"
 Sleep 1000
 
-; Activate Export
 Send "{Enter}"
 Sleep 3000
 
-; Save to target CSV path
 SendText exportPath
 Sleep 500
 Send "{Enter}"
@@ -206,40 +203,210 @@ Sleep 500
 Send "!{F4}"
 Sleep 3000
 
-ExitApp
+ExitApp 0
 ```
+
+---
+
+## Current batch wrapper
+
+This is the current wrapper batch file. It copies the working `.QDF`, runs the AutoHotkey script, checks the return code, and archives the resulting CSV.
+
+```bat
+@echo off
+setlocal
+
+rem === CONFIGURE THESE PATHS ===
+set "SRC=G:\My Drive\personal\finances\HOME.QDF"
+set "DST=C:\tmp\HOME_nightly.QDF"
+
+rem === AutoHotkey paths ===
+set "AHKEXE=C:\Program Files\AutoHotkey\v2\AutoHotkey64.exe"
+set "AHK=\\10.0.0.214\pi-nas\openclaw\quicken_tools\QuickenPortfolioExport.ahk"
+
+rem === EXPORTED CSV PRODUCED BY THE AHK SCRIPT ===
+set "EXPORT_CSV=\\10.0.0.214\pi-nas\openclaw\quicken_tools\portfolio_nightly.csv"
+
+rem === FINAL RENAMED COPY ===
+set "FINAL_DIR=\\10.0.0.214\pi-nas\openclaw\quicken_tools\archive"
+
+for /f %%I in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd"') do set "TODAY=%%I"
+set "FINAL_CSV=portfolio_%TODAY%.csv"
+
+rem === GUARD: source must exist ===
+if not exist "%SRC%" (
+    echo ERROR: Source file not found:
+    echo   %SRC%
+    exit /b 2
+)
+
+rem === GUARD: AutoHotkey executable must exist ===
+if not exist "%AHKEXE%" (
+    echo ERROR: AutoHotkey executable not found:
+    echo   %AHKEXE%
+    exit /b 3
+)
+
+rem === GUARD: AHK script must exist ===
+if not exist "%AHK%" (
+    echo ERROR: AutoHotkey script not found:
+    echo   %AHK%
+    exit /b 4
+)
+
+rem === ENSURE DESTINATION FOLDER EXISTS ===
+for %%I in ("%DST%") do set "DSTDIR=%%~dpI"
+if not exist "%DSTDIR%" (
+    mkdir "%DSTDIR%"
+    if errorlevel 1 (
+        echo ERROR: Could not create destination folder:
+        echo   %DSTDIR%
+        exit /b 5
+    )
+)
+
+rem === COPY QDF TO LOCAL WORKING FILE ===
+copy /Y "%SRC%" "%DST%" >nul
+if errorlevel 1 (
+    echo ERROR: Copy of QDF failed.
+    exit /b 6
+)
+
+echo Copy successful:
+echo   %SRC%
+echo   ^>
+echo   %DST%
+
+rem === RUN AHK EXPORT SCRIPT AND WAIT FOR IT ===
+"%AHKEXE%" "%AHK%"
+set "RC=%ERRORLEVEL%"
+
+if not "%RC%"=="0" (
+    echo ERROR: AutoHotkey export script failed with code %RC%.
+    exit /b %RC%
+)
+
+rem === CHECK FOR EXPECTED EXPORT OUTPUT ===
+if not exist "%EXPORT_CSV%" (
+    echo ERROR: Expected export CSV not found:
+    echo   %EXPORT_CSV%
+    exit /b 7
+)
+
+rem === ENSURE ARCHIVE DIRECTORY EXISTS ===
+if not exist "%FINAL_DIR%" (
+    mkdir "%FINAL_DIR%"
+    if errorlevel 1 (
+        echo ERROR: Could not create archive directory:
+        echo   %FINAL_DIR%
+        exit /b 8
+    )
+)
+
+rem === COPY/RENAME EXPORT TO ARCHIVE FILE ===
+copy /Y "%EXPORT_CSV%" "%FINAL_DIR%\%FINAL_CSV%" >nul
+if errorlevel 1 (
+    echo ERROR: Failed copying final CSV to archive name.
+    exit /b 9
+)
+
+echo Success:
+echo   Export created: %EXPORT_CSV%
+echo   Archived as:    %FINAL_DIR%\%FINAL_CSV%
+
+exit /b 0
+```
+
+---
+
+## Exit codes
+
+### AutoHotkey script exit codes
+
+- `0` = success
+- `10` = Quicken already running
+- `11` = working QDF file missing
+- `12` = Quicken window did not appear after launch
+- `13` = Quicken window could not be activated
+
+### Batch wrapper exit codes
+
+- `0` = success
+- `2` = source QDF missing
+- `3` = AutoHotkey executable missing
+- `4` = AutoHotkey script missing
+- `5` = could not create local working directory
+- `6` = failed copying source QDF to local working QDF
+- `7` = expected nightly export CSV missing after AHK success
+- `8` = could not create archive directory
+- `9` = failed copying the nightly CSV into the archive filename
+- any propagated AutoHotkey nonzero code = AHK-stage failure
 
 ---
 
 ## Configuration
 
-These are the main values you are likely to customize:
+These are the main values you are likely to customize.
 
-### `qdfPath`
+### In the AutoHotkey script
 
-Local path to the Quicken data file to be opened.
+#### `qdfPath`
 
-Example:
-
-```ahk
-qdfPath := "C:\Finance\Quicken\PrimaryData.QDF"
-```
-
-### `exportPath`
-
-Destination CSV file path.
+Local path to the copied working Quicken data file.
 
 Example:
 
 ```ahk
-exportPath := "\\10.0.0.214\pi-nas\openclaw\quicken_exports\portfolio_nightly.csv"
+qdfPath := "C:\tmp\HOME_nightly.QDF"
 ```
 
-### Timing values
+#### `exportPath`
+
+Nightly CSV path written by Quicken.
+
+Example:
+
+```ahk
+exportPath := "\\10.0.0.214\pi-nas\openclaw\quicken_tools\portfolio_nightly.csv"
+```
+
+### In the batch wrapper
+
+#### `SRC`
+
+Source `.QDF` to be copied into the local working location.
+
+#### `DST`
+
+Local working `.QDF` opened by the automation.
+
+#### `AHKEXE`
+
+Path to AutoHotkey v2 executable.
+
+#### `AHK`
+
+Path to the AutoHotkey automation script.
+
+#### `EXPORT_CSV`
+
+Nightly CSV expected after the AHK script completes.
+
+#### `FINAL_DIR`
+
+Directory receiving archive copies of the nightly CSV.
+
+#### `FINAL_CSV`
+
+Date-stamped archive filename, currently `portfolio_yyyy-mm-dd.csv`.
+
+---
+
+## Timing values
 
 The script currently uses fixed delays such as:
 
-- `Sleep 20000` after launching Quicken
+- `Sleep 25000` after launching Quicken
 - `Sleep 3000` after opening views/dialogs
 
 These may need adjustment depending on machine speed, Quicken updates, or network conditions.
@@ -252,79 +419,50 @@ To test manually:
 
 1. Log into the Windows account used for automation.
 2. Ensure Quicken is not already open.
-3. Double-click the `.ahk` file.
+3. Run the batch file from Command Prompt by full path.
 4. Confirm that:
-   - the correct data file opens
+   - the source QDF is copied locally
+   - the correct working QDF opens
    - the portfolio view is selected
-   - the export is written to the expected path
+   - the export is written to the nightly CSV path
    - overwrite is handled
    - Quicken closes when done
+   - the archive copy is created with the expected filename
 
 ---
 
 ## Running from Task Scheduler
 
+The intended final scheduler entry point is the **batch wrapper**, not the `.ahk` file directly.
+
 Recommended Task Scheduler settings:
 
 - **Trigger:** Daily at the desired time
-- **Action:** Start AutoHotkey with the script as an argument, or run the `.ahk` file directly if associated
+- **Action:** Start the batch file, or start `cmd.exe /c <batchfile>`
 - **Run only when user is logged on:** Yes
-- **Start in:** the script directory
+- **Start in:** the wrapper script directory
 
-Typical explicit configuration:
+A robust explicit configuration is usually:
 
 - **Program/script:**
 
 ```text
-C:\Program Files\AutoHotkey\v2\AutoHotkey64.exe
+C:\Windows\System32\cmd.exe
 ```
 
 - **Add arguments:**
 
 ```text
-"C:\path\to\quicken_export.ahk"
+/c "C:\path\to\wrapper.bat"
+```
+
+- **Start in:**
+
+```text
+C:\path\to
 ```
 
 Do at least one manual **Run** from Task Scheduler before relying on the daily trigger.
-
----
-
-## Recommended hardening
-
-The current version works, but the next improvements worth adding are:
-
-### 1. Logging
-
-Add a log file for:
-
-- script start time
-- abort because Quicken is already running
-- missing QDF file
-- inability to find the Quicken window
-- successful export completion
-
-Example:
-
-```ahk
-logFile := "C:\OpenClaw\logs\quicken_export.log"
-FileAppend(FormatTime(, "yyyy-MM-dd HH:mm:ss") " - Started`n", logFile)
-```
-
-### 2. Post-export validation
-
-Optionally confirm that:
-
-- the CSV file exists
-- the modification time changed
-- the file size is above some minimum threshold
-
-### 3. Error handling for missing share access
-
-If the NAS/share is unavailable, the Save step may fail. It would be useful to detect that and log it explicitly.
-
-### 4. Safer window targeting
-
-Today the script relies on keyboard navigation and fixed timing. Future versions could use more precise window/control targeting if needed.
 
 ---
 
@@ -347,7 +485,7 @@ After Quicken updates, rerun a manual test.
 
 ### Quicken opens the wrong file
 
-Make sure the script launches the `.QDF` file directly:
+Make sure the batch wrapper copied the desired source `.QDF` to the local working path, and that the AHK script launches the local working file:
 
 ```ahk
 Run qdfPath
@@ -355,23 +493,39 @@ Run qdfPath
 
 Do not rely on launching `qw.exe` alone.
 
+### Quicken warns about the file not being local
+
+The working `.QDF` should be local, for example:
+
+```text
+C:\tmp\HOME_nightly.QDF
+```
+
+The CSV output can still be written to the NAS/share.
+
 ### Script starts while Quicken is already open
 
-Confirm the guard is present:
+This is an intentional guard. The AHK script returns exit code `10`:
 
 ```ahk
 if ProcessExist("qw.exe") {
-    ExitApp
+    ExitApp 10
 }
 ```
 
 ### Export path fails
 
-Verify that the Windows account running the script can browse and write to:
+Verify that the Windows account running the scheduler can browse and write to:
 
 ```text
-\\10.0.0.214\pi-nas\openclaw\quicken_exports\
+\\10.0.0.214\pi-nas\openclaw\quicken_tools\
 ```
+
+### Archive file is overwritten on repeated same-day runs
+
+The current archive filename uses only the date. Multiple successful runs on the same day will overwrite the same archive file.
+
+If that becomes a problem, switch to a timestamp including hours/minutes/seconds.
 
 ### The wrong dropdown item is selected
 
@@ -385,6 +539,9 @@ Common causes:
 - network share not yet available
 - Quicken startup slower under scheduled launch
 - script working directory not set
+- mapped drives not available in the scheduler context
+
+Note that the current `SRC` path uses a mapped `G:` drive. If Task Scheduler runs under a context where `G:` is not mounted, the wrapper will fail early.
 
 ---
 
@@ -395,10 +552,9 @@ A simple starting layout:
 ```text
 .
 ├── README.md
-├── scripts/
-│   └── quicken_export.ahk
-├── docs/
-│   └── task_scheduler_notes.md
+├── QuickenPortfolioExport.ahk
+├── run_quicken_export.bat
+├── archive/
 └── logs/
 ```
 
@@ -410,15 +566,17 @@ Current status: **working manually end-to-end**.
 
 Validated behaviors:
 
-- specific QDF file launch works
+- local working QDF launch works
 - portfolio export works
 - overwrite approval works
 - Quicken closes after export
-- existing-running-Quicken guard can be added cleanly
+- wrapper batch file waits for AHK completion
+- AHK exit codes propagate back to the wrapper
+- archive copy after successful export works
 
 Remaining operational validation:
 
-- unattended reboot + auto-login test
 - Task Scheduler invocation test
+- unattended reboot + auto-login test
 - repeated daily reliability test
-
+- optional logging for batch and AHK runs
