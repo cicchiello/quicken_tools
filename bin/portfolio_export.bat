@@ -18,6 +18,12 @@ set "FINAL_DIR=\\10.0.0.214\pi-nas\openclaw\quicken_tools\archive"
 for /f %%I in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd"') do set "TODAY=%%I"
 set "FINAL_CSV=portfolio_%TODAY%.csv"
 
+rem === IDEMPOTENCY: skip if today's archive already exists ===
+if exist "%FINAL_DIR%\%FINAL_CSV%" (
+    echo Already exported today: %FINAL_DIR%\%FINAL_CSV%
+    exit /b 0
+)
+
 rem === GUARD: source must exist ===
 if not exist "%SRC%" (
     echo ERROR: Source file not found:
